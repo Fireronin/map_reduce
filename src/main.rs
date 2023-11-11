@@ -1,88 +1,87 @@
 use serde::{Serialize, Deserialize};
+use bincode::serialize;
 use std::net::{TcpListener, TcpStream};
 use std::io::{Read, Write};
 use std::collections::HashMap;
-use std::boxed::Box;
 use std::any::Any;
+use rayon::prelude::*;
+use std::sync::Arc;
 
 // Define the struct
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone,Copy)]
 struct KeyValue {
     key: i32,
     value: i32,
 }
 
-
-
-
-trait FnBox {
-    fn call_box(&self, arg: &dyn Any) -> Box<dyn Any>;
-}
-
-impl<F: Fn(&dyn Any) -> Box<dyn Any> > FnBox for F {
-    fn call_box(&self, arg: &dyn Any) -> Box<dyn Any> {
-        (*self)(arg)
-    }
-}
-
-macro_rules! map {
-    ($func:expr, $vec:expr) => {{
-        let mut result = Vec::new();
-        for item in $vec {
-            result.push($func(item.clone()));
-        }
-        result
-    }};
+fn wrapper<FROM: Any + for<'de> Deserialize<'de>, TO: Serialize, F: Fn(FROM) -> TO + 'static>(f: Arc<F>,data: Vec<u8>) -> Vec<u8> {
+    let data = bincode::deserialize::<FROM>(&data).unwrap();
+    let result = f(data);
+    bincode::serialize(&result).unwrap()
 }
 
 macro_rules! add_function {
-    ($map:expr, $func:expr) => {
-        $map.insert(stringify!($func).to_string(), Box::new(move |arg: &dyn Any| $func(arg.downcast_ref().unwrap())));
+    ($context:ident, $name:ident, $function:expr) => {
+        let f = Arc::new($function);
+        $context.functions_map.insert(stringify!($name).to_string(), Arc::new(move |data| wrapper(Arc::clone(&f),data)));
     };
 }
 
-fn multiply_by_two(x: &KeyValue) -> Box<dyn Any> {
-    Box::new(KeyValue { key: x.key, value: x.value * 2 })
-}
-
-
-#[derive(Default)]
 struct Context {
-    functions_map: HashMap<String, Box<dyn FnBox>>,
+    functions_map: HashMap<String, Arc<dyn Fn(Vec<u8>) -> Vec<u8> + Send + Sync + 'static>>,
 }
 
 impl Context {
-    fn new() -> Context {
+    fn new() -> Self {
         Context {
             functions_map: HashMap::new(),
         }
     }
 
-    fn add_function(&mut self, name: &str, func: Box<dyn FnBox>) {
-        self.functions_map.insert(name.to_string(), func);
+    fn call_function<FROM: Any + Serialize, TO: for<'de> Deserialize<'de> >(&self, name: &str, data: FROM) -> TO {
+        let function = self.functions_map.get(name).unwrap();
+        let serialized_data = bincode::serialize(&data).unwrap();
+        let result = function(serialized_data);
+        bincode::deserialize::<TO>(&result).unwrap()
     }
 
-    fn get_function(&self, name: &str) -> Option<&Box<dyn FnBox>> {
-        self.functions_map.get(name)
-    }
-
-    fn run_function(&self, name: &str, arg: &dyn Any) -> Option<Box<dyn Any>> {
-        let func = self.get_function(name)?;
-        Some(func.call_box(arg))
-    }
-
-    fn map(&self, name: &str, vec: Vec<Box<dyn Any>>) -> Option<Vec<Box<dyn Any>>> {
-        let func = self.get_function(name)?;
+    fn map_function<FROM: Any + Serialize, TO: for<'de> Deserialize<'de> >(&self, name: &str, data: Vec<FROM>) -> Vec<TO> {
+        let function = self.functions_map.get(name).unwrap();
         let mut result = Vec::new();
-        for item in vec {
-            result.push(func.call_box(item.as_ref()));
+        for item in data {
+            let serialized_data = bincode::serialize(&item).unwrap();
+            let result_item = function(serialized_data);
+            let result_item = bincode::deserialize::<TO>(&result_item).unwrap();
+            result.push(result_item);
         }
-        Some(result)
+        result
+
     }
+
+    fn map_function_rayon<FROM: Any + Serialize + Sync, TO: for<'de> Deserialize<'de> + Send >(&self, name: &str, data: Vec<FROM>) -> Vec<TO> {
+        let function = self.functions_map.get(name).unwrap();
+        let serialized_data = data.par_iter().map(|item| bincode::serialize(&item).unwrap()).collect::<Vec<Vec<u8>>>();
+        let result = serialized_data.par_iter().map(|item| function(item.clone())).collect::<Vec<Vec<u8>>>();
+        let mut deserialized_result = Vec::new();
+        for item in result {
+            let item = bincode::deserialize::<TO>(&item).unwrap();
+            deserialized_result.push(item);
+        }
+        deserialized_result
+    }
+
+    
+
+    
+
 }
 
-fn to_any_vec(data: Vec<KeyValue>) -> Vec<Box<dyn Any>> {
-    data.into_iter().map(|x| Box::new(x) as Box<dyn Any>).collect()
+
+fn multiply_by_2(x: KeyValue) -> KeyValue {
+    KeyValue {
+        key: x.key,
+        value: x.value * 2,
+    }
 }
 
 fn main() {
@@ -93,16 +92,28 @@ fn main() {
         KeyValue { key: 3, value: 30 },
     ];
 
-    let mut context = Context::new();
+    let mut data_long = Vec::new();
+    for i in 0..1000000 {
+        data_long.push(KeyValue { key: i, value: i });
+    }
 
-    add_function!(context.functions_map, multiply_by_two); 
+    let mut context = Context::new();
+    add_function!(context, map, multiply_by_2);
     
 
-    let result = context.map("multiply_by_two", to_any_vec(data)).unwrap();
 
-    for item in result {
-        let item = item.downcast_ref::<KeyValue>().unwrap();
-        println!("{} {}", item.key, item.value);
-    }
+    // get current time 
+    let start = std::time::Instant::now();
+
+    let result =  context.map_function_rayon::<KeyValue,KeyValue>("map",data_long);
+
+    // get elapsed time
+    let elapsed = start.elapsed();
+    println!("Elapsed: {:.2?}", elapsed);
+
+    // for item in result {
+    //     println!("{:?}", item);
+    // }
+
 
 }

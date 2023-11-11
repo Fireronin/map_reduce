@@ -77,6 +77,22 @@ impl Context {
 }
 
 
+
+fn call_map_function_rayon<FROM: Any + Serialize + Sync, TO: for<'de> Deserialize<'de> + Send, F: Fn(FROM) -> TO + Sync + Send + 'static>(
+    context: &Context, 
+    _: F, 
+    func_name: &str, 
+    data: Vec<FROM>
+) -> Vec<TO> {
+    context.map_function_rayon::<FROM, TO>(func_name, data)
+}
+
+macro_rules! map_function_rayon {
+    ($context:ident, $func:ident, $data:ident) => {
+        call_map_function_rayon(&$context, $func, stringify!($func), $data)
+    };
+}
+
 fn multiply_by_2(x: KeyValue) -> KeyValue {
     KeyValue {
         key: x.key,
@@ -100,14 +116,12 @@ fn main() {
     let mut context = Context::new();
     add_function!(context, map, multiply_by_2);
     
-
-
-    // get current time 
+    
     let start = std::time::Instant::now();
 
-    let result =  context.map_function_rayon::<KeyValue,KeyValue>("map",data_long);
+    let result = map_function_rayon!(context,multiply_by_2,data);
+    //let result =  context.map_function_rayon::<KeyValue,KeyValue>("map",data_long);
 
-    // get elapsed time
     let elapsed = start.elapsed();
     println!("Elapsed: {:.2?}", elapsed);
 

@@ -21,9 +21,9 @@ fn wrapper<FROM: Any + for<'de> Deserialize<'de>, TO: Serialize, F: Fn(FROM) -> 
 }
 
 macro_rules! add_function {
-    ($context:ident, $name:ident, $function:expr) => {
+    ($context:ident, $function:expr) => {
         let f = Arc::new($function);
-        $context.functions_map.insert(stringify!($name).to_string(), Arc::new(move |data| wrapper(Arc::clone(&f),data)));
+        $context.functions_map.insert(stringify!($function).to_string(), Arc::new(move |data| wrapper(Arc::clone(&f),data)));
     };
 }
 
@@ -60,14 +60,14 @@ impl Context {
 
     fn map_function_rayon<FROM: Any + Serialize + Sync, TO: for<'de> Deserialize<'de> + Send >(&self, name: &str, data: Vec<FROM>) -> Vec<TO> {
         let function = self.functions_map.get(name).unwrap();
-        let serialized_data = data.par_iter().map(|item| bincode::serialize(&item).unwrap()).collect::<Vec<Vec<u8>>>();
-        let result = serialized_data.par_iter().map(|item| function(item.clone())).collect::<Vec<Vec<u8>>>();
-        let mut deserialized_result = Vec::new();
-        for item in result {
-            let item = bincode::deserialize::<TO>(&item).unwrap();
-            deserialized_result.push(item);
-        }
-        deserialized_result
+        let result: Vec<_> = data.par_iter()
+        .map(|item| {
+            let serialized_item = bincode::serialize(&item).unwrap();
+            let processed_item = function(serialized_item.clone());
+            bincode::deserialize::<TO>(&processed_item).unwrap()
+        })
+        .collect();
+        result
     }
 
     
@@ -93,6 +93,22 @@ macro_rules! map_function_rayon {
     };
 }
 
+// same for normal map
+fn call_map_function<FROM: Any + Serialize, TO: for<'de> Deserialize<'de> , F: Fn(FROM) -> TO + 'static>(
+    context: &Context, 
+    _: F, 
+    func_name: &str, 
+    data: Vec<FROM>
+) -> Vec<TO> {
+    context.map_function::<FROM, TO>(func_name, data)
+}
+
+macro_rules! map_function {
+    ($context:ident, $func:ident, $data:ident) => {
+        call_map_function(&$context, $func, stringify!($func), $data)
+    };
+}
+
 fn multiply_by_2(x: KeyValue) -> KeyValue {
     KeyValue {
         key: x.key,
@@ -114,13 +130,14 @@ fn main() {
     }
 
     let mut context = Context::new();
-    add_function!(context, map, multiply_by_2);
+    add_function!(context, multiply_by_2);
     
-    
+
     let start = std::time::Instant::now();
 
-    let result = map_function_rayon!(context,multiply_by_2,data);
-    //let result =  context.map_function_rayon::<KeyValue,KeyValue>("map",data_long);
+    //let result = map_function!(context,multiply_by_2,data_long);
+    let result = map_function_rayon!(context,multiply_by_2,data_long);
+    
 
     let elapsed = start.elapsed();
     println!("Elapsed: {:.2?}", elapsed);

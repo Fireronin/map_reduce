@@ -11,7 +11,7 @@ use std::sync::Arc;
 #[derive(Serialize, Deserialize, Debug, Clone,Copy)]
 struct KeyValue {
     key: i32,
-    value: i32,
+    value: i64,
 }
 
 fn wrapper<FROM: Any + for<'de> Deserialize<'de>, TO: Serialize, F: Fn(FROM) -> TO + 'static>(f: Arc<F>,data: Vec<u8>) -> Vec<u8> {
@@ -27,14 +27,31 @@ macro_rules! add_function {
     };
 }
 
+fn wrapper_reduce<FROM: Any + for<'de> Deserialize<'de> + Serialize, F: Fn(FROM, FROM) -> FROM + 'static>(f: Arc<F>,data_a: Vec<u8>,data_b: Vec<u8>) -> Vec<u8> {
+    let data_a = bincode::deserialize::<FROM>(&data_a).unwrap();
+    let data_b = bincode::deserialize::<FROM>(&data_b).unwrap();
+    let result = f(data_a,data_b);
+    bincode::serialize(&result).unwrap()
+}
+
+macro_rules! add_function_reduce {
+    ($context:ident, $function:expr) => {
+        let f = Arc::new($function);
+        $context.functions_reduce_map.insert(stringify!($function).to_string(), Arc::new(move |data_a,data_b| wrapper_reduce(Arc::clone(&f),data_a,data_b)));
+    };
+}
+
+
 struct Context {
     functions_map: HashMap<String, Arc<dyn Fn(Vec<u8>) -> Vec<u8> + Send + Sync + 'static>>,
+    functions_reduce_map: HashMap<String, Arc<dyn Fn(Vec<u8>,Vec<u8>) -> Vec<u8> + Send + Sync + 'static>>,
 }
 
 impl Context {
     fn new() -> Self {
         Context {
             functions_map: HashMap::new(),
+            functions_reduce_map: HashMap::new(),
         }
     }
 
@@ -71,9 +88,29 @@ impl Context {
     }
 
     
+    fn reduce_function<FROM: Any + Serialize + for<'de> Deserialize<'de> >(&self, name: &str, data: Vec<FROM>) -> FROM {
+        let function = self.functions_reduce_map.get(name).unwrap();
+        // get first item
+        let mut result = bincode::serialize(&data[0]).unwrap();
+        for item in data.iter().skip(1) {
+            let serialized_data = bincode::serialize(&item).unwrap();
+            result = function(result,serialized_data);
+        }
+        bincode::deserialize::<FROM>(&result).unwrap()
 
-    
+    }
 
+    fn reduce_function_rayon<FROM: Any + Serialize + Sync + for<'de> Deserialize<'de> + Send >(&self, name: &str, data: Vec<FROM>) -> FROM {
+        let function = self.functions_reduce_map.get(name).unwrap();
+        // let serialized_data = data.par_iter().map(|item| bincode::serialize(&item).unwrap()).collect::<Vec<Vec<u8>>>();
+        // let result = serialized_data.into_par_iter().reduce_with(|a,b| function(a,b)).unwrap();
+        let result = data.par_iter()
+        .map(|item| bincode::serialize(&item).unwrap())
+        .reduce_with(|a, b| function(a, b))
+        .unwrap();
+        bincode::deserialize::<FROM>(&result).unwrap()
+
+    }
 }
 
 
@@ -109,10 +146,32 @@ macro_rules! map_function {
     };
 }
 
+fn call_reduce_function_rayon<FROM: Any + Serialize + Sync +Send + for<'de> Deserialize<'de>, F: Fn(FROM, FROM) -> FROM + Sync + Send + 'static>(
+    context: &Context, 
+    _: F, 
+    func_name: &str, 
+    data: Vec<FROM>
+) -> FROM {
+    context.reduce_function_rayon::<FROM>(func_name, data)
+}
+
+macro_rules! reduce_function_rayon {
+    ($context:ident, $func:ident, $data:ident) => {
+        call_reduce_function_rayon(&$context, $func, stringify!($func), $data)
+    };
+}
+
 fn multiply_by_2(x: KeyValue) -> KeyValue {
     KeyValue {
         key: x.key,
         value: x.value * 2,
+    }
+}
+
+fn sum(x: KeyValue, y: KeyValue) -> KeyValue {
+    KeyValue {
+        key: x.key,
+        value: x.value + y.value,
     }
 }
 
@@ -125,23 +184,25 @@ fn main() {
     ];
 
     let mut data_long = Vec::new();
-    for i in 0..1000000 {
-        data_long.push(KeyValue { key: i, value: i });
+    for i in 0..100000 {
+        data_long.push(KeyValue { key: i, value: i as i64 });
     }
 
     let mut context = Context::new();
     add_function!(context, multiply_by_2);
-    
+    add_function_reduce!(context, sum);
 
     let start = std::time::Instant::now();
 
     //let result = map_function!(context,multiply_by_2,data_long);
     let result = map_function_rayon!(context,multiply_by_2,data_long);
     
+    let summed = reduce_function_rayon!(context,sum,result);
 
     let elapsed = start.elapsed();
     println!("Elapsed: {:.2?}", elapsed);
 
+    println!("{:?}", summed);
     // for item in result {
     //     println!("{:?}", item);
     // }

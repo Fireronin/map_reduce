@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package hello_world;
+
+service Greeter {
+  rpc SayHello (HelloRequest) returns (HelloReply) {};
+  rpc MapChunk (MapRequest) returns (MapReply) {};
+}
+
+message MapRequest {
+  string function = 1;
+  bytes data = 2;
+}
+
+message MapReply {
+  bytes data = 1;
+}
+
+message HelloRequest {
+  string message = 1;
+}
+
+message HelloReply {
+  string message = 1;
+}

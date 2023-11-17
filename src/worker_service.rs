@@ -16,9 +16,9 @@ pub struct MyGreeter {
 }
 
 impl MyGreeter {
-    fn new(context: Context) -> Self {
+    fn new(context: &Context) -> Self {
         MyGreeter {
-            context: context,
+            context: context.clone(),
         }
     }
 }
@@ -57,9 +57,9 @@ impl Greeter for MyGreeter {
 }
 
 // #[tokio::main]
-pub async fn do_worker(context: Context) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn do_worker(context: &Context) -> Result<(), Box<dyn std::error::Error>> {
     let addr = "[::1]:50051".parse().unwrap();
-    let greeter = MyGreeter::new(context);
+    let greeter = MyGreeter::new(&context);
 
     println!("GreeterServer listening on {}", addr);
     

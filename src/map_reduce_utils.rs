@@ -1,11 +1,19 @@
 use serde::{Serialize, Deserialize};
 use bincode::serialize;
+use tonic::transport::Channel;
+use std::default;
 use std::net::{TcpListener, TcpStream};
 use std::io::{Read, Write};
 use std::collections::HashMap;
+
+use hello_world::greeter_client::GreeterClient;
 use std::any::Any;
 use rayon::prelude::*;
 use std::sync::Arc;
+pub mod hello_world {
+    tonic::include_proto!("hello_world");
+}
+
 
 // Define the struct
 #[derive(Serialize, Deserialize, Debug, Clone,Copy,Default)]
@@ -58,11 +66,12 @@ macro_rules! add_function_reduce {
     };
 }
 
-
+#[derive(Clone)]
 pub struct Context {
     pub functions_map: HashMap<String, Arc<dyn Fn(Vec<u8>) -> Vec<u8> + Send + Sync + 'static>>,
     pub functions_map_rayon: HashMap<String, Arc<dyn Fn(&Vec<u8>) -> Vec<u8> + Send + Sync + 'static>>,
     pub functions_reduce_map: HashMap<String, Arc<dyn Fn(Vec<u8>,Vec<u8>) -> Vec<u8> + Send + Sync + 'static>>,
+    pub client: Option<GreeterClient<Channel>>,
 }
 
 impl Context {
@@ -71,6 +80,7 @@ impl Context {
             functions_map: HashMap::new(),
             functions_map_rayon: HashMap::new(),
             functions_reduce_map: HashMap::new(),
+            client: None,
         }
     }
 
@@ -106,6 +116,8 @@ impl Context {
         result
     }
 
+
+    
     pub fn map_function_rayon_serialized(&self, name: &str, data: &Vec<u8>) -> Vec<u8> {
         let function = self.functions_map_rayon.get(name).unwrap();
         function(data)

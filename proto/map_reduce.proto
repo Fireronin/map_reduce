@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package map_reduce;
+
+service MapReduce {
+  rpc MapChunk (MapRequest) returns (MapReply) {};
+  rpc ReduceChunk (MapRequest) returns (MapReply) {};
+}
+
+message MapRequest {
+  string function = 1;
+  bytes data = 2;
+}
+
+message MapReply {
+  bytes data = 1;
+}

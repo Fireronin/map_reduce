@@ -1,42 +1,25 @@
-use std::os::windows;
-
 use tonic::{transport::Server, Request, Response, Status};
-
-use hello_world::greeter_server::*;
-use hello_world::*;
+use tokio::signal;
+use map_reduce::map_reduce_server::*;
+use map_reduce::*;
 use crate::map_reduce_utils::*;
-
-pub mod hello_world {
-    tonic::include_proto!("hello_world");
-}
+use tokio::sync::Notify;
 
 
-pub struct MyGreeter {
+pub struct MapReduceWorker {
     context : Context,
 }
 
-impl MyGreeter {
+impl MapReduceWorker {
     fn new(context: &Context) -> Self {
-        MyGreeter {
+        MapReduceWorker {
             context: context.clone(),
         }
     }
 }
 
 #[tonic::async_trait]
-impl Greeter for MyGreeter {
-
-    async fn say_hello(
-        &self,
-        request: Request<HelloRequest>,
-    ) -> Result<Response<HelloReply>, Status> {
-        println!("Got a request from {:?}", request.remote_addr());
-
-        let reply = hello_world::HelloReply {
-            message: format!("Hello {}!", request.into_inner().message),
-        };
-        Ok(Response::new(reply))
-    }
+impl MapReduce for MapReduceWorker {
 
     async fn map_chunk(
         &self,
@@ -47,26 +30,70 @@ impl Greeter for MyGreeter {
         let function = inner_request.function.as_str();
         let data = &inner_request.data;
         let output = self.context.map_function_rayon_serialized(function,data);
-        
-        let reply = hello_world::MapReply {
-            data: output,
-        };
+        match output {
+            Some(x) => {
+                let reply = map_reduce::MapReply {
+                    data: x,
+                };
+                Ok(Response::new(reply))
+            },
+            None => {
+                Err(Status::not_found("Function not found"))
+            }
+        }
+    }
 
-        Ok(Response::new(reply))
+    async fn reduce_chunk(
+        &self,
+        request: Request<MapRequest>,
+    ) -> Result<Response<MapReply>, Status> {
+
+        let inner_request = request.into_inner();
+        let function = inner_request.function.as_str();
+        let data = &inner_request.data;
+        print!("reduce_chunk");
+        let output = self.context.reduce_function_rayon_serialized(function,data);
+        match output {
+            Some(x) => {
+                let reply = map_reduce::MapReply {
+                    data: x,
+                };
+                Ok(Response::new(reply))
+            },
+            None => {
+                Err(Status::not_found("Function not found"))
+            }
+        }
     }
 }
 
-// #[tokio::main]
-pub async fn do_worker(context: &Context) -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "[::1]:50051".parse().unwrap();
-    let greeter = MyGreeter::new(&context);
 
-    println!("GreeterServer listening on {}", addr);
-    
-    Server::builder()
-        .add_service(GreeterServer::new(greeter))
-        .serve(addr)
-        .await?;
+
+pub async fn do_worker(context: &Context) -> Result<(), Box<dyn std::error::Error>> {
+    let addr = "[::1]:50052".parse().unwrap();
+    let greeter = MapReduceWorker::new(&context);
+
+    let shutdown = Notify::new();
+
+    let ctrl_c = tokio::spawn(async move {
+        signal::ctrl_c().await.expect("Failed to listen for ctrl_c");
+        shutdown.notify_one();
+    });
+
+    println!("Listening on {}", addr);
+
+    let server = Server::builder()
+        .add_service(MapReduceServer::new(greeter))
+        .serve(addr);
+
+    tokio::select! {
+        _ = ctrl_c => {
+            println!("Ctrl-C event received, shutting down");
+        },
+        _ = server => {
+            println!("Server stopped");
+        },
+    }
 
     Ok(())
 }

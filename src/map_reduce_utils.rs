@@ -14,6 +14,7 @@ pub mod map_reduce {
 
 
 
+
 pub fn wrapper_rayon<FROM: Any + for<'de> Deserialize<'de> + Serialize + Sync + Send, TO: Serialize + for<'de> Deserialize<'de> + Send + Sync, F: Fn(&FROM) -> TO + Sync + Send + 'static>(f: Arc<F>,data: &Vec<u8>) -> Vec<u8> {
     let data = bincode::deserialize::<Vec<FROM>>(data).unwrap();
     let result: Vec<_> = data.par_iter()
@@ -53,9 +54,8 @@ macro_rules! add_function_reduce {
 pub struct Context {
     pub functions_map: HashMap<String, Arc<dyn Fn(Vec<u8>) -> Vec<u8> + Send + Sync + 'static>>,
     pub functions_map_rayon: HashMap<String, Arc<dyn Fn(&Vec<u8>) -> Vec<u8> + Send + Sync + 'static>>,
-    pub functions_reduce_map: HashMap<String, Arc<dyn Fn(Vec<u8>,Vec<u8>) -> Vec<u8> + Send + Sync + 'static>>,
+    pub functions_reduce_map: HashMap<String, Arc<dyn Fn(Vec<u8>, Vec<u8>) -> Vec<u8> + Send + Sync + 'static>>,
     pub functions_reduce_map_rayon: HashMap<String, Arc<dyn Fn(&Vec<u8>) -> Vec<u8> + Send + Sync + 'static>>,
-    pub client: Option<MapReduceClient<Channel>>,
 }
 
 impl Context {
@@ -65,119 +65,110 @@ impl Context {
             functions_map_rayon: HashMap::new(),
             functions_reduce_map: HashMap::new(),
             functions_reduce_map_rayon: HashMap::new(),
-            client: None,
         }
     }
-    
+
     pub fn map_function_rayon_serialized(&self, name: &str, data: &Vec<u8>) -> Option<Vec<u8>> {
         let function = self.functions_map_rayon.get(name);
         match function {
-            Some(f) => {
-                Some(f(data))
-            },
+            Some(f) => Some(f(data)),
             None => {
-                println!("Function {} not found",name);
+                println!("Function {} not found", name);
                 None
             }
-            
         }
     }
 
     pub fn reduce_function_rayon_serialized(&self, name: &str, data: &Vec<u8>) -> Option<Vec<u8>> {
         let function = self.functions_reduce_map_rayon.get(name);
         match function {
-            Some(f) => {
-                Some(f(data))
-            },
+            Some(f) => Some(f(data)),
             None => {
-                println!("Worker: Function {} not found, length of the name: {}",name, name.len());
+                println!("Worker: Function {} not found, length of the name: {}", name, name.len());
                 None
             }
         }
     }
 
-    async fn map_function_distributed<FROM: Any + Serialize + Sync, TO: for<'de> Deserialize<'de> + Send >(&mut self, name: &str, data: &Vec<FROM>) -> Result<Vec<TO>, Box<dyn std::error::Error>> {
+    pub async fn map_function_distributed<FROM: Any + Serialize + Sync, TO: for<'de> Deserialize<'de> + Send>(
+        &mut self,
+        name: &str,
+        data: &Vec<FROM>,
+        client: &mut MapReduceClient<Channel>,
+    ) -> Result<Vec<TO>, Box<dyn std::error::Error>> {
         let serialized = bincode::serialize(&data).unwrap();
         let request_map = tonic::Request::new(MapRequest {
-            function:  name.into(),
-            data:  serialized.into(),
+            function: name.into(),
+            data: serialized.into(),
         });
-        let response = self.client.as_mut().unwrap().map_chunk(request_map).await?;
+        let response = client.map_chunk(request_map).await?;
         Ok(bincode::deserialize::<Vec<TO>>(&response.into_inner().data).unwrap())
     }
-    
-    // this function exists only because we want to make sure function is the right type and you should always use macro
-    pub async fn call_map_function_distributed<FROM: Any + Serialize + Send + Sync, TO: for<'de> Deserialize<'de>  + Send + Sync , F: Fn(&FROM) -> TO + 'static>(
+
+    pub async fn call_map_function_distributed<FROM: Any + Serialize + Send + Sync,
+        TO: for<'de> Deserialize<'de> + Send + Sync,
+        F: Fn(&FROM) -> TO + 'static>(
         &mut self,
-        _: F, 
-        func_name: &str, 
-        data: &Vec<FROM>
+        _: F,
+        func_name: &str,
+        data: &Vec<FROM>,
+        client: &mut MapReduceClient<Channel>,
     ) -> Result<Vec<TO>, Box<dyn std::error::Error>> {
-        if self.client.is_none() {
-            println!("Client is none");
-            Err(Box::new(tonic::Status::new(tonic::Code::Internal, "Client is none")))
-        }else{
-            self.map_function_distributed::<FROM, TO>(func_name, data).await
-        }
-       
+        self.map_function_distributed::<FROM, TO>(func_name, data, client).await
     }
 
-    pub async fn reduce_function_distributed<FROM: Any + Serialize + Sync + for<'de> Deserialize<'de> + Send >(client: &mut MapReduceClient<Channel>, name: &str, data: &Vec<FROM>) -> Result<FROM, Box<dyn std::error::Error>> {
+    pub async fn reduce_function_distributed<FROM: Any + Serialize + Sync + for<'de> Deserialize<'de> + Send>(
+        &mut self,
+        client: &mut MapReduceClient<Channel>,
+        name: &str,
+        data: &Vec<FROM>,
+    ) -> Result<FROM, Box<dyn std::error::Error>> {
         let serialized = bincode::serialize(&data).unwrap();
         let request_map = tonic::Request::new(MapRequest {
-            function:  name.into(),
-            data:  serialized.into(),
+            function: name.into(),
+            data: serialized.into(),
         });
         let response = client.reduce_chunk(request_map).await;
         match response {
-            Ok(x) => {
-                Ok(bincode::deserialize::<FROM>(&x.into_inner().data).unwrap())
-            },
+            Ok(x) => Ok(bincode::deserialize::<FROM>(&x.into_inner().data).unwrap()),
             Err(e) => {
-                println!("Error: {}",e);
+                println!("Error: {}", e);
                 Err(Box::new(e))
             }
         }
     }
-    
-    // this function exists only because we want to make sure function is the right type and you should always use macro
-    pub async fn call_reduce_function_distributed<FROM: Any + Serialize + Send + Sync + for<'de> Deserialize<'de>, F: Fn(&FROM,&FROM) -> FROM + 'static>(
+
+    pub async fn call_reduce_function_distributed<FROM: Any + Serialize + Send + Sync + for<'de> Deserialize<'de>,
+        F: Fn(&FROM, &FROM) -> FROM + 'static>(
         &mut self,
-        _: F, 
-        func_name: &str, 
-        data: &Vec<FROM>
+        _: F,
+        func_name: &str,
+        data: &Vec<FROM>,
+        client: &mut MapReduceClient<Channel>,
     ) -> Result<FROM, Box<dyn std::error::Error>> {
-        //check if function exists
+        // check if function exists
         let function = self.functions_reduce_map_rayon.get(func_name);
         if function.is_none() {
-            println!("Function {} not found",func_name);
-            return Err(Box::new(tonic::Status::new(tonic::Code::Internal, "Function not found")))
+            println!("Function {} not found", func_name);
+            return Err(Box::new(tonic::Status::new(tonic::Code::Internal, "Function not found")));
         }
-        
-        if self.client.is_none() {
-            println!("Client is none");
-            Err(Box::new(tonic::Status::new(tonic::Code::Internal, "Client is none")))
-        }else{
-            Context::reduce_function_distributed::<FROM>(self.client.as_mut().unwrap(),func_name, data).await
-        }
-        
-       
-    }
 
-    
+        self.reduce_function_distributed::<FROM>(client, func_name, data).await
+    }
 }
+
 
 #[macro_export]
 macro_rules! map_distributed {
-    ($context:ident, $func:ident, $data:ident) => {
-        ($context).call_map_function_distributed($func, stringify!($func), &$data).await?
+    ($context:ident, $func:ident, $data:ident, $client:expr) => {
+        ($context).call_map_function_distributed($func, stringify!($func), &$data, $client).await?
     };
 }
 
 #[macro_export]
 macro_rules! reduce_distributed {
-    ($context:ident, $func:ident, $data:ident) => {
-        ($context).call_reduce_function_distributed($func, stringify!($func), &$data).await?
+    ($context:ident, $func:ident, $data:ident, $client:expr) => {
+        ($context).call_reduce_function_distributed($func, stringify!($func), &$data, $client).await?
     };
 }
 
@@ -188,11 +179,24 @@ pub async fn worker_master_split(context: &Context) -> Result<(), Box<dyn std::e
             println!("I'm {}", val);
             match val {
                 "master" => {
-                    ()
+                    worker_service::do_master(context).await?;
+                    std::process::exit(0);
                 },
                 "worker" => {
                     worker_service::do_worker(context).await?;
                     // kill worker so it won't start doing master's code
+                    std::process::exit(0);
+                },
+                "user" =>{
+                    // sample data
+                    let data_vec = vec![
+                        worker_service::KeyValue { key: 1, value: 10 },
+                        worker_service::KeyValue { key: 2, value: 20 },
+                    ];
+
+                    // Send the job to the master
+                    worker_service::send_job_data_to_listener(data_vec).await?;
+                    // Exit the user process
                     std::process::exit(0);
                 },
                 _ => {
@@ -206,3 +210,4 @@ pub async fn worker_master_split(context: &Context) -> Result<(), Box<dyn std::e
     }
     Ok(())
 }
+

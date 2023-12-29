@@ -15,3 +15,11 @@ message MapRequest {
 message MapReply {
   bytes data = 1;
 }
+message ReduceRequest {
+  string function = 1;
+  repeated bytes data = 2;
+}
+
+message ReduceReply {
+  bytes data = 1;
+}

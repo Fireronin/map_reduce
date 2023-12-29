@@ -32,7 +32,8 @@ pub fn sum(x: &KeyValue, y: &KeyValue) -> KeyValue {
     }
 }
 
-
+// $env:ROLE="master"; cargo run
+// $env:ROLE="worker"; cargo run
 // set ROLE=master && cargo run
 // set ROLE=worker && cargo run
 
@@ -47,19 +48,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     worker_master_split(&context).await?; //after this line only master will run
 
-    context.client = Some(MapReduceClient::connect("http://[::1]:50052").await?);
-    
+    /* 
+    // Create the client outside of the context
+    let mut my_client = MapReduceClient::connect("http://[::1]:50052").await?;
+
     // sample data
     let data_vec = vec![
         KeyValue { key: 1, value: 10 },
         KeyValue { key: 2, value: 20 },
     ];
 
-    let result = map_distributed!(context, multiply_by_2, data_vec);
+    // Use the macros with the provided client
+    let result = map_distributed!(context, multiply_by_2, data_vec, &mut my_client);
     println!("Map RESPONSE={:?}", result);
 
-    let result = reduce_distributed!(context,sum, result);
+    let result = reduce_distributed!(context, sum, result, &mut my_client);
     println!("Reduce RESPONSE={:?}", result);
-
+    */
     Ok(())
 }
+

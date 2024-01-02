@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+spec:
+  replicas: 1  # Replace with the actual number of replicas
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+      - name: worker
+        env:
+        - name: ROLE
+          value: "worker"
+        - name: WORKERS_URL
+          value: "/home/map/workers_urls"
+        - name: PATH
+          value: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/map_reduce"
+        image: map-reduce:latest
+        imagePullPolicy: IfNotPresent
+        workingDir: /home/map
+        command: ["/bin/sh", "-c", "while true; do sleep infinity; done"]
+        ports:
+        - containerPort: 22
+
+---
+# Worker Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker-service
+spec:
+  selector:
+    app: worker
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 22
+
+---
+# Master Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: master
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: master
+  template:
+    metadata:
+      labels:
+        app: master
+    spec:
+      containers:
+      - name: master
+        env:
+        - name: ROLE
+          value: "master"
+        - name: WORKERS_URL
+          value: "/home/map/workers_urls"
+        - name: PATH
+          value: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/map_reduce"
+        image: map-reduce:latest
+        imagePullPolicy: IfNotPresent
+        workingDir: /home/map
+        command: ["/bin/sh", "-c", "while true; do sleep infinity; done"]
+        ports:
+        - containerPort: 22

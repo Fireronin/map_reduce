@@ -10,6 +10,17 @@ service MapReduce {
 message MapRequest {
   string function = 1;
   bytes data = 2;
+  string destination = 3;
+  next_job messgae 
+}
+
+message ReductionRequest {
+  string function = 1;
+  bytes data = 2;
+  string destination = 3;
+  int32 number_of_chunks = 4;
+  int32 chunk_id = 5;
+  int32 job_id = 6;
 }
 
 message MapReply {

@@ -70,7 +70,10 @@ impl MapReduce for MapReduceWorker {
 
 
 pub async fn do_worker(context: &Context) -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "[::1]:50052".parse().unwrap();
+    //let addr = "[::1]:50052".parse().unwrap();
+    // grab ip from env variable
+    let addr = std::env::var("WORKER_URL").unwrap_or("[::1]:9000".to_string()).parse().unwrap();
+
     let greeter = MapReduceWorker::new(&context);
 
     let shutdown = Notify::new();

@@ -19,8 +19,6 @@ spec:
           value: "worker"
         - name: WORKERS_URL
           value: "/home/map/workers_urls"
-        - name: PATH
-          value: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/map_reduce"
         image: map-reduce:latest
         imagePullPolicy: IfNotPresent
         workingDir: /home/map

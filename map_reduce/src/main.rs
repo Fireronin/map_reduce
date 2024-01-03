@@ -52,6 +52,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read file WORKERS_URL
     let workers_url = std::fs::read_to_string(workers_url_filename).expect("Something went wrong reading the file");
     
+    // remove \n from the end of the string
+    let workers_url = workers_url.trim_end_matches('\n');
+    // add http:// to the beginning of the string
+    let workers_url = format!("http://{}", workers_url);
     
     // split , and create a vector of workers url
     let workers_url_vec: Vec<String> = workers_url.split(",").map(|s| s.to_string()).collect();

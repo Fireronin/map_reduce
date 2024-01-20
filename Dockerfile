@@ -1,22 +1,27 @@
-FROM alpine:latest
+FROM ubuntu:latest
 
-RUN apk add --no-cache curl && \
-    curl -LO "https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl" && \
-    chmod +x ./kubectl && \
-    mv ./kubectl /usr/local/bin/kubectl
+# Install curl, protobuf, cargo, apt-transport-https, ca-certificates, and gnupg
+RUN apt-get update && \
+    apt-get install -y curl protobuf-compiler cargo apt-transport-https ca-certificates gnupg
 
+# Download the public signing key for the Kubernetes package repositories
+RUN if [ ! -d /etc/apt/keyrings ]; then mkdir -p -m 755 /etc/apt/keyrings; fi && \
+    curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 
-# Install protobuf and cargo
-RUN apk add --no-cache protobuf cargo
+# Add the appropriate Kubernetes apt repository
+RUN echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /' > /etc/apt/sources.list.d/kubernetes.list
 
-# Copy map_reduce folder
-COPY ./map_reduce /home/map/map_reduce
+# Update apt package index, then install kubectl
+RUN apt-get update && \
+    apt-get install -y kubectl
 
-# Run cargo build
-RUN cd /home/map/map_reduce && cargo build
+# This stuff is not needed as executable will be copied from host
+
+# # Copy map_reduce folder
+# COPY ./map_reduce /home/map/map_reduce
+
+# # Run cargo build
+# RUN cd /home/map/map_reduce && cargo build
 
 # Set the default command to run when starting a container from this image
 # CMD ["/home/map/map_reduce/target/debug/map_reduce"]
-
-
-

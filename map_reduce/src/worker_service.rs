@@ -65,6 +65,36 @@ impl MapReduce for MapReduceWorker {
             }
         }
     }
+
+    async fn map_reduce_chunk(
+        &self,
+        request: Request<MapReduceRequest>,
+    ) -> Result<Response<MapReply>, Status> {
+
+        let inner_request = request.into_inner();
+        let function_map = inner_request.function_map.as_str();
+        let data = &inner_request.data;
+        let output = self.context.map_function_rayon_serialized(function_map,data);
+        // if output is None then return error else create new varaible mapped_data
+        let mapped_data = match output {
+            Some(x) => x,
+            None => return Err(Status::not_found("Function not found")),
+        };
+        let function_reduce = inner_request.function_reduce.as_str();
+        let output = self.context.reduce_function_rayon_serialized(function_reduce,&mapped_data);
+        match output {
+            Some(x) => {
+                let reply = map_reduce::MapReply {
+                    data: x,
+                };
+                Ok(Response::new(reply))
+            },
+            None => {
+                Err(Status::not_found("Function not found"))
+            }
+        }
+
+    }
 }
 
 

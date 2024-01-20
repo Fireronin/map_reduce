@@ -5,6 +5,14 @@ package map_reduce;
 service MapReduce {
   rpc MapChunk (MapRequest) returns (MapReply) {};
   rpc ReduceChunk (MapRequest) returns (MapReply) {};
+  rpc MapReduceChunk (MapReduceRequest) returns (MapReply) {};
+}
+
+
+message MapReduceRequest {
+  string function_map = 1;
+  string function_reduce = 2;
+  bytes data = 3;
 }
 
 message MapRequest {

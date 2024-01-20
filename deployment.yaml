@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: worker
 spec:
-  replicas: 1  # Replace with the actual number of replicas
+  replicas: 3  # Replace with the actual number of replicas
   selector:
     matchLabels:
       app: worker

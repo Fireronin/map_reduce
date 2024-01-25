@@ -8,7 +8,7 @@ pub mod worker_service;
 
 
 // Example data structure
-#[derive(Serialize, Deserialize, Debug, Clone,Default)]
+#[derive(Serialize, Deserialize, Debug, Clone,Default,Copy)]
 pub struct KeyValue {
     pub key: i32,
     pub value: i64,
@@ -47,8 +47,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     context.update_workers_pool().await?; //update workers pool 
 
+    println!("Workers pool={:?}", context.clients.len());
+
     // sample data with 10 elements
-    let data_vec: Vec<KeyValue> = (1..100000).map(|x| KeyValue { key: x, value: x as i64 }).collect();
+    let data_vec: Vec<KeyValue> = (1..10).map(|x| KeyValue { key: x, value: x as i64 }).collect();
 
     let result = map_distributed!(context, multiply_by_2, data_vec);
     println!("Map RESPONSE={:?}", result);

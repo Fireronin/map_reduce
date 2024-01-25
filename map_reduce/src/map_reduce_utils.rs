@@ -3,6 +3,7 @@ use serde::{Serialize, Deserialize};
 use tokio::time::error::Elapsed;
 use tokio::time::{timeout, Duration, Timeout};
 use tonic::transport::Channel;
+use std::cmp::max;
 use std::collections::HashMap;
 use map_reduce::*;
 use map_reduce::map_reduce_client::MapReduceClient;
@@ -15,7 +16,7 @@ use std::future::*;
 use std::pin::Pin;
 use std::task;
 use std::task::Poll;
-use tonic::Status;
+use tonic::{client, Response, Status};
 use std::collections::VecDeque;
 use crate::worker_service;
 pub mod map_reduce {
@@ -71,7 +72,7 @@ pub struct Context {
 
 fn chunking_strategy<T : Copy>(data: &Vec<T>, number_of_chunks: usize) -> Vec<Vec<T>> {
     let mut chunks = Vec::new();
-    let chunk_size = data.len() / number_of_chunks;
+    let chunk_size = max(data.len() / number_of_chunks,1);
     let mut start = 0;
     let mut end = chunk_size;
     for _ in 0..number_of_chunks {
@@ -82,33 +83,15 @@ fn chunking_strategy<T : Copy>(data: &Vec<T>, number_of_chunks: usize) -> Vec<Ve
     chunks
 }
 
-struct IndexedFuture<T> {
-    index: usize,
-    future: Box<T>,
-}
+async fn map_request_runner( job_id: usize, mut client: MapReduceClient<Channel>, request: tonic::Request<MapRequest>) -> Result<(usize, Response<MapReply>, MapReduceClient<Channel>), Status> {
+    let timeout_duration = Duration::from_secs(30); // Set your timeout duration
 
-// impl future trait for IndexedFuture
-impl<T> Future for IndexedFuture<T>
-where
-    T: Future + Unpin,
-{
-    type Output = (usize, T::Output);
+    let response_future = client.map_chunk(request);
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
-        let output = futures::ready!(self.future.poll_unpin(cx));
-        Poll::Ready((self.index, output))
-    }
-}
-
-impl<T> Stream for IndexedFuture<T>
-where
-    T: Future + Unpin,
-{
-    type Item = (usize, T::Output);
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Option<Self::Item>> {
-        let output: <T as Future>::Output = futures::ready!(self.future.poll_unpin(cx));
-        Poll::Ready(Some((self.index, output)))
+    match timeout(timeout_duration, response_future).await {
+        Ok(Ok(response)) => Ok((job_id, response, client)),
+        Ok(Err(status)) => Err(status),
+        Err(_) => Err(Status::deadline_exceeded("Timeout exceeded")),
     }
 }
 
@@ -151,11 +134,23 @@ impl Context {
         }
     }
 
+    
+
+    // function that runs map function with a client then using tokio select waits for the result or timeout
+    // This functions should return a a future that retunrs a tuple of result and client and job_id
+
+
     async fn map_function_distributed<FROM: Any + Serialize + Sync +Copy, TO: for<'de> Deserialize<'de> + Send + Clone >(&mut self, name: &str, data: &Vec<FROM>) -> Result<Vec<TO>, Box<dyn std::error::Error>> {
         // with support for multiple workers
         let clinet_len = self.clients.len();
-        let mut results = Vec::new();
-        let chunks = chunking_strategy(data, clinet_len*2);
+        let mut results: Vec<Vec<TO>> = Vec::new();
+        //let chunks = chunking_strategy(data, clinet_len*2);
+        let chunks = data.chunks(data.len()/clinet_len).collect::<Vec<_>>();
+
+        // print size of chunks
+        for chunk in &chunks {
+            println!("Chunk size: {}", chunk.len());
+        }
 
         let mut chunks_to_process = VecDeque::new();
         
@@ -171,65 +166,28 @@ impl Context {
 
         let mut futures_ordered = FuturesOrdered::new();
         let mut chunks_currently_processing = VecDeque::new();
-
-
         
-        for client in self.clients.iter_mut() {
-            let chunk_index = chunks_to_process.pop_front().unwrap();
-            let data_chunk = &chunks[chunk_index];
-            let serialized = bincode::serialize(&data_chunk).unwrap();
-            let request_map = tonic::Request::new(MapRequest {
-                function:  name.into(),
-                data:  serialized.into(),
-            });
-            let future = client.map_chunk(request_map);
-            
-
-
-            let future = tokio::time::timeout(Duration::from_secs(5), future);
-            // wrap this into a future that will either result of timeout or chunk index
-            // let future_indexed: IndexedFuture<Box<dyn Future<Output = Result<tonic::Response<MapReply>, Status>>>> = IndexedFuture {
-            //     index: chunk_index,
-            //     future: future,
-            // };
-            chunks_currently_processing.push_back(chunk_index);
-            futures_ordered.push_back(future);
-            
-        }
-
         while !chunks_to_process.is_empty() && !futures_ordered.is_empty(){
             match futures_ordered.next().await {
-                Some( x) => {
-                    match x {
-                        Ok(x) => {
-                            match x {
-                                Ok(x) => {
-                                    let response = x;
-                                    let output = bincode::deserialize::<Vec<TO>>(&&response.into_inner().data).unwrap();
-                                    results.push(output);
-                                    avaliable_workers.push_back(chunks_to_process.pop_front().unwrap());
-                                    chunks_currently_processing.pop_front();
-                                },
-                                Err(e) => {
-
-                                    println!("Error Tonic: {}",e);
-                                    chunks_to_process.push_back(chunks_currently_processing.pop_front().unwrap());
-                                }
-                            }
-                        },
-                        Err(e) => {
-                            println!("Error Timeout: {}",e);
-                            chunks_to_process.push_back(chunks_currently_processing.pop_front().unwrap());
-                        }
-                    }
+                Some(Ok((job_id,response , client))) => {
+                    let response : Response<MapReply> = response;
+                    let output = bincode::deserialize::<Vec<TO>>(&response.into_inner().data).unwrap();
+                    results.push(output);
+                    avaliable_workers.push_back(job_id);
+                    chunks_currently_processing.pop_front();
+                    self.clients.push(client);
+                },
+                Some(Err(e)) => {
+                    println!("Error: {}",e);
+                    chunks_to_process.push_back(chunks_currently_processing.pop_front().unwrap());
                 },
                 None => {
                     continue;
-                }
-            }
+                },
+            };
 
             
-            if (avaliable_workers.is_empty()){
+            if avaliable_workers.is_empty(){
                 continue;
             }
             match chunks_to_process.pop_front() {
@@ -240,9 +198,12 @@ impl Context {
                         function:  name.into(),
                         data:  serialized.into(),
                     });
-                    let future = &self.clients[avaliable_workers.pop_front().unwrap()].map_chunk(request_map);
-                    // wrap this future with tokio timeout
-                    let future = tokio::time::timeout(Duration::from_secs(5), future);
+                    let worker_idx = avaliable_workers.pop_front().unwrap();
+
+                    let mut one_client = self.clients.drain(worker_idx..=worker_idx).next().unwrap();
+
+                    let future = map_request_runner(chunk_index, one_client, request_map);
+                    
                     futures_ordered.push_back(future);
                     chunks_currently_processing.push_back(chunk_index);
                 },
@@ -253,7 +214,7 @@ impl Context {
 
         }
 
-
+        
 
         // write me while loop that will create futures 
         
@@ -283,7 +244,7 @@ impl Context {
     }
     
     // this function exists only because we want to make sure function is the right type and you should always use macro
-    pub async fn call_map_function_distributed<FROM: Any + Serialize + Send + Sync, TO: for<'de> Deserialize<'de>  + Send + Sync + Clone , F: Fn(&FROM) -> TO + 'static>(
+    pub async fn call_map_function_distributed<FROM: Any + Serialize + Send + Sync+Copy, TO: for<'de> Deserialize<'de>  + Send + Sync + Clone , F: Fn(&FROM) -> TO + 'static>(
         &mut self,
         _: F, 
         func_name: &str, 
@@ -340,7 +301,7 @@ impl Context {
     }
     
     // this function exists only because we want to make sure function is the right type and you should always use macro
-    pub async fn call_reduce_function_distributed<FROM: Any + Serialize + Send + Sync + for<'de> Deserialize<'de>, F: Fn(&FROM,&FROM) -> FROM + 'static>(
+    pub async fn call_reduce_function_distributed<FROM: Any + Serialize + Send + Sync + for<'de> Deserialize<'de>+ Copy, F: Fn(&FROM,&FROM) -> FROM + 'static>(
         &mut self,
         _: F, 
         func_name: &str, 
@@ -411,8 +372,8 @@ impl Context {
     }
 
     pub async fn call_map_reduce_functions_distributed<
-        FROM: Any +  for<'de> Deserialize<'de> + Serialize + Send + Sync + Clone,
-        TO: Any + for<'da> Deserialize<'da> + Serialize + Send + Sync + Clone,
+        FROM: Any +  for<'de> Deserialize<'de> + Serialize + Send + Sync + Clone + Copy,
+        TO: Any + for<'da> Deserialize<'da> + Serialize + Send + Sync + Clone + Copy,
         FMap: Fn(&FROM) -> TO + 'static ,
         FReduce: Fn(&TO,&TO) -> TO + 'static > (
         &mut self,

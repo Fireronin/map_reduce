@@ -33,7 +33,7 @@ for worker in $workers_list {
     echo $"Preparing worker ($worker)"
     let total_port = $start_port + $i
 
-    kubectl exec ($worker) -- pkill -f map_reduce
+    try {kubectl exec ($worker) -- pkill -f map_reduce}
 
     kubectl cp ./map_reduce/target/debug/map_reduce $"($worker):/home/map/map_reduce"
     let pod_ip  = kubectl get pods -l app=worker -o $'jsonpath="{.items[($i)].status.podIP}"'

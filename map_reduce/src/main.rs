@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     context.update_workers_pool().await?; //update workers pool 
 
     // sample data with 10 elements
-    let data_vec: Vec<KeyValue> = (1..10).map(|x| KeyValue { key: x, value: x as i64 }).collect();
+    let data_vec: Vec<KeyValue> = (1..100000).map(|x| KeyValue { key: x, value: x as i64 }).collect();
 
     let result = map_distributed!(context, multiply_by_2, data_vec);
     println!("Map RESPONSE={:?}", result);
@@ -57,7 +57,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Reduce RESPONSE={:?}", result);
 
     // now using single function
-
     let result = map_reduce_distributed!(context, multiply_by_2, sum, data_vec);
     println!("MapReduce RESPONSE={:?}", result);
 

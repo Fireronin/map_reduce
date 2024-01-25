@@ -1,5 +1,7 @@
+use futures::stream::{futures_unordered, FuturesOrdered, FuturesUnordered};
 use serde::{Serialize, Deserialize};
-use tokio::time::{timeout, Duration};
+use tokio::time::error::Elapsed;
+use tokio::time::{timeout, Duration, Timeout};
 use tonic::transport::Channel;
 use std::collections::HashMap;
 use map_reduce::*;
@@ -8,6 +10,13 @@ use std::any::Any;
 use rayon::prelude::*;
 use std::sync::Arc;
 use std::env;
+use futures::*;
+use std::future::*;
+use std::pin::Pin;
+use std::task;
+use std::task::Poll;
+use tonic::Status;
+use std::collections::VecDeque;
 use crate::worker_service;
 pub mod map_reduce {
     tonic::include_proto!("map_reduce");
@@ -59,6 +68,51 @@ pub struct Context {
     pub clients: Vec<MapReduceClient<Channel>>,
 }
 
+
+fn chunking_strategy<T : Copy>(data: &Vec<T>, number_of_chunks: usize) -> Vec<Vec<T>> {
+    let mut chunks = Vec::new();
+    let chunk_size = data.len() / number_of_chunks;
+    let mut start = 0;
+    let mut end = chunk_size;
+    for _ in 0..number_of_chunks {
+        chunks.push(data[start..end].to_vec());
+        start = end;
+        end += chunk_size;
+    }
+    chunks
+}
+
+struct IndexedFuture<T> {
+    index: usize,
+    future: Box<T>,
+}
+
+// impl future trait for IndexedFuture
+impl<T> Future for IndexedFuture<T>
+where
+    T: Future + Unpin,
+{
+    type Output = (usize, T::Output);
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
+        let output = futures::ready!(self.future.poll_unpin(cx));
+        Poll::Ready((self.index, output))
+    }
+}
+
+impl<T> Stream for IndexedFuture<T>
+where
+    T: Future + Unpin,
+{
+    type Item = (usize, T::Output);
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Option<Self::Item>> {
+        let output: <T as Future>::Output = futures::ready!(self.future.poll_unpin(cx));
+        Poll::Ready(Some((self.index, output)))
+    }
+}
+
+
 impl Context {
     pub fn new() -> Self {
         Context {
@@ -97,27 +151,133 @@ impl Context {
         }
     }
 
-    async fn map_function_distributed<FROM: Any + Serialize + Sync , TO: for<'de> Deserialize<'de> + Send + Clone >(&mut self, name: &str, data: &Vec<FROM>) -> Result<Vec<TO>, Box<dyn std::error::Error>> {
+    async fn map_function_distributed<FROM: Any + Serialize + Sync +Copy, TO: for<'de> Deserialize<'de> + Send + Clone >(&mut self, name: &str, data: &Vec<FROM>) -> Result<Vec<TO>, Box<dyn std::error::Error>> {
         // with support for multiple workers
         let clinet_len = self.clients.len();
         let mut results = Vec::new();
-        let mut futures = Vec::new();
-        // use split_at_mut to split the data into chunks and split clients into chunks then zip them together and for each chunk create a future
-        for (data_chunk, client_chunk) in data.chunks(data.len()/clinet_len).zip(self.clients.split_at_mut(clinet_len).0) {
+        let chunks = chunking_strategy(data, clinet_len*2);
+
+        let mut chunks_to_process = VecDeque::new();
+        
+        let mut avaliable_workers = VecDeque::new();
+        for i in 0..self.clients.len() {
+            avaliable_workers.push_back(i);
+        } 
+
+        // push indexes of chunks to process
+        for i in 0..chunks.len() {
+            chunks_to_process.push_back(i);
+        }
+
+        let mut futures_ordered = FuturesOrdered::new();
+        let mut chunks_currently_processing = VecDeque::new();
+
+
+        
+        for client in self.clients.iter_mut() {
+            let chunk_index = chunks_to_process.pop_front().unwrap();
+            let data_chunk = &chunks[chunk_index];
             let serialized = bincode::serialize(&data_chunk).unwrap();
             let request_map = tonic::Request::new(MapRequest {
                 function:  name.into(),
                 data:  serialized.into(),
             });
-            futures.push(client_chunk.map_chunk(request_map));
+            let future = client.map_chunk(request_map);
+            
+
+
+            let future = tokio::time::timeout(Duration::from_secs(5), future);
+            // wrap this into a future that will either result of timeout or chunk index
+            // let future_indexed: IndexedFuture<Box<dyn Future<Output = Result<tonic::Response<MapReply>, Status>>>> = IndexedFuture {
+            //     index: chunk_index,
+            //     future: future,
+            // };
+            chunks_currently_processing.push_back(chunk_index);
+            futures_ordered.push_back(future);
+            
         }
-        // wait for all futures to finish and collect the results
-        for future in futures {
-            let response = future.await?;
-            results.push(bincode::deserialize::<Vec<TO>>(&response.into_inner().data).unwrap());
+
+        while !chunks_to_process.is_empty() && !futures_ordered.is_empty(){
+            match futures_ordered.next().await {
+                Some( x) => {
+                    match x {
+                        Ok(x) => {
+                            match x {
+                                Ok(x) => {
+                                    let response = x;
+                                    let output = bincode::deserialize::<Vec<TO>>(&&response.into_inner().data).unwrap();
+                                    results.push(output);
+                                    avaliable_workers.push_back(chunks_to_process.pop_front().unwrap());
+                                    chunks_currently_processing.pop_front();
+                                },
+                                Err(e) => {
+
+                                    println!("Error Tonic: {}",e);
+                                    chunks_to_process.push_back(chunks_currently_processing.pop_front().unwrap());
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            println!("Error Timeout: {}",e);
+                            chunks_to_process.push_back(chunks_currently_processing.pop_front().unwrap());
+                        }
+                    }
+                },
+                None => {
+                    continue;
+                }
+            }
+
+            
+            if (avaliable_workers.is_empty()){
+                continue;
+            }
+            match chunks_to_process.pop_front() {
+                Some(chunk_index) => {
+                    let data_chunk = &chunks[chunk_index];
+                    let serialized = bincode::serialize(&data_chunk).unwrap();
+                    let request_map = tonic::Request::new(MapRequest {
+                        function:  name.into(),
+                        data:  serialized.into(),
+                    });
+                    let future = &self.clients[avaliable_workers.pop_front().unwrap()].map_chunk(request_map);
+                    // wrap this future with tokio timeout
+                    let future = tokio::time::timeout(Duration::from_secs(5), future);
+                    futures_ordered.push_back(future);
+                    chunks_currently_processing.push_back(chunk_index);
+                },
+                None => {
+                    continue;
+                }
+            }
+
         }
-        // flatten the results
+
+
+
+        // write me while loop that will create futures 
+        
+
+        // version without failure handling
+        // use split_at_mut to split the data into chunks and split clients into chunks then zip them together and for each chunk create a future
+        // for (data_chunk, client_chunk) in data.chunks(data.len()/clinet_len).zip(self.clients.split_at_mut(clinet_len).0) {
+        //     let serialized = bincode::serialize(&data_chunk).unwrap();
+        //     let request_map = tonic::Request::new(MapRequest {
+        //         function:  name.into(),
+        //         data:  serialized.into(),
+        //     });
+        //     futures.push(client_chunk.map_chunk(request_map));
+        // }
+        // // wait for all futures to finish and collect the results
+        // for future in futures {
+        //     let response = future.await?;
+        //     results.push(bincode::deserialize::<Vec<TO>>(&response.into_inner().data).unwrap());
+        // }
+        // // flatten the results
         Ok(results.into_iter().flatten().collect())
+
+
+        //Ok(vec![])
 
 
     }
@@ -212,6 +372,7 @@ impl Context {
         let clinet_len = self.clients.len();
         let mut results = Vec::new();
         let mut futures = Vec::new();
+        
         // use split_at_mut to split the data into chunks and split clients into chunks then zip them together and for each chunk create a future
         for (data_chunk, client_chunk) in data.chunks(data.len()/clinet_len).zip(self.clients.split_at_mut(clinet_len).0) {
             let serialized = bincode::serialize(&data_chunk).unwrap();

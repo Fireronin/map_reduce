@@ -149,10 +149,10 @@ impl Context {
 
         let mut chunks_to_process = VecDeque::new();
         
-        let mut avaliable_workers = VecDeque::new();
-        for i in 0..self.clients.len() {
-            avaliable_workers.push_back(i);
-        } 
+        // let mut avaliable_workers = VecDeque::new();
+        // for i in 0..self.clients.len() {
+        //     avaliable_workers.push_back(i);
+        // } 
 
         for i in 0..chunks.len() {
             chunks_to_process.push_back(i);
@@ -168,7 +168,7 @@ impl Context {
                     let output = bincode::deserialize::<Vec<TO>>(&response.into_inner().data).unwrap();
                     results.push(output);
                     println!("Results: {:?}", results.len());
-                    avaliable_workers.push_back(job_id);
+                    //avaliable_workers.push_back(job_id);
                     chunks_currently_processing.pop_front();
                     self.clients.push(client);
                 },
@@ -182,9 +182,9 @@ impl Context {
             };
 
             
-            if avaliable_workers.is_empty(){
-                continue;
-            }
+            // if avaliable_workers.is_empty(){
+            //     continue;
+            // }
             match chunks_to_process.pop_front() {
                 
                 Some(chunk_index) => {
@@ -194,9 +194,9 @@ impl Context {
                         function:  name.into(),
                         data:  serialized.into(),
                     });
-                    let worker_idx = avaliable_workers.pop_front().unwrap();
+                    //let worker_idx = avaliable_workers.pop_front().unwrap();
 
-                    let mut one_client = self.clients.drain(worker_idx..=worker_idx).next().unwrap();
+                    let one_client = self.clients.drain(0..0).next().unwrap();
 
                     let future = map_request_runner(chunk_index, one_client, request_map);
                     

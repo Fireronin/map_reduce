@@ -84,7 +84,7 @@ fn chunking_strategy<T : Copy>(data: &Vec<T>, number_of_chunks: usize) -> Vec<Ve
 }
 
 async fn map_request_runner( job_id: usize, mut client: MapReduceClient<Channel>, request: tonic::Request<MapRequest>) -> Result<(usize, Response<MapReply>, MapReduceClient<Channel>), Status> {
-    let timeout_duration = Duration::from_secs(30); // Set your timeout duration
+    let timeout_duration = Duration::from_secs(5); // Set your timeout duration
 
     let response_future = client.map_chunk(request);
 
@@ -167,12 +167,14 @@ impl Context {
         let mut futures_ordered = FuturesOrdered::new();
         let mut chunks_currently_processing = VecDeque::new();
         
-        while !chunks_to_process.is_empty() && !futures_ordered.is_empty(){
+        while (!chunks_to_process.is_empty()) || (!chunks_currently_processing.is_empty()) {
             match futures_ordered.next().await {
                 Some(Ok((job_id,response , client))) => {
                     let response : Response<MapReply> = response;
                     let output = bincode::deserialize::<Vec<TO>>(&response.into_inner().data).unwrap();
                     results.push(output);
+                    // print results
+                    println!("Results: {:?}", results.len());
                     avaliable_workers.push_back(job_id);
                     chunks_currently_processing.pop_front();
                     self.clients.push(client);
@@ -182,7 +184,7 @@ impl Context {
                     chunks_to_process.push_back(chunks_currently_processing.pop_front().unwrap());
                 },
                 None => {
-                    continue;
+                    
                 },
             };
 
@@ -191,6 +193,7 @@ impl Context {
                 continue;
             }
             match chunks_to_process.pop_front() {
+                
                 Some(chunk_index) => {
                     let data_chunk = &chunks[chunk_index];
                     let serialized = bincode::serialize(&data_chunk).unwrap();
@@ -235,6 +238,9 @@ impl Context {
         //     results.push(bincode::deserialize::<Vec<TO>>(&response.into_inner().data).unwrap());
         // }
         // // flatten the results
+
+        
+
         Ok(results.into_iter().flatten().collect())
 
 

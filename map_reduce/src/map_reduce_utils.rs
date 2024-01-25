@@ -136,18 +136,13 @@ impl Context {
 
     
 
-    // function that runs map function with a client then using tokio select waits for the result or timeout
-    // This functions should return a a future that retunrs a tuple of result and client and job_id
-
 
     async fn map_function_distributed<FROM: Any + Serialize + Sync +Copy, TO: for<'de> Deserialize<'de> + Send + Clone >(&mut self, name: &str, data: &Vec<FROM>) -> Result<Vec<TO>, Box<dyn std::error::Error>> {
-        // with support for multiple workers
         let clinet_len = self.clients.len();
         let mut results: Vec<Vec<TO>> = Vec::new();
         //let chunks = chunking_strategy(data, clinet_len*2);
         let chunks = data.chunks(data.len()/clinet_len).collect::<Vec<_>>();
 
-        // print size of chunks
         for chunk in &chunks {
             println!("Chunk size: {}", chunk.len());
         }
@@ -159,7 +154,6 @@ impl Context {
             avaliable_workers.push_back(i);
         } 
 
-        // push indexes of chunks to process
         for i in 0..chunks.len() {
             chunks_to_process.push_back(i);
         }
@@ -173,7 +167,6 @@ impl Context {
                     let response : Response<MapReply> = response;
                     let output = bincode::deserialize::<Vec<TO>>(&response.into_inner().data).unwrap();
                     results.push(output);
-                    // print results
                     println!("Results: {:?}", results.len());
                     avaliable_workers.push_back(job_id);
                     chunks_currently_processing.pop_front();
@@ -219,11 +212,8 @@ impl Context {
 
         
 
-        // write me while loop that will create futures 
-        
 
         // version without failure handling
-        // use split_at_mut to split the data into chunks and split clients into chunks then zip them together and for each chunk create a future
         // for (data_chunk, client_chunk) in data.chunks(data.len()/clinet_len).zip(self.clients.split_at_mut(clinet_len).0) {
         //     let serialized = bincode::serialize(&data_chunk).unwrap();
         //     let request_map = tonic::Request::new(MapRequest {
@@ -232,12 +222,10 @@ impl Context {
         //     });
         //     futures.push(client_chunk.map_chunk(request_map));
         // }
-        // // wait for all futures to finish and collect the results
         // for future in futures {
         //     let response = future.await?;
         //     results.push(bincode::deserialize::<Vec<TO>>(&response.into_inner().data).unwrap());
         // }
-        // // flatten the results
 
         
 
@@ -270,7 +258,6 @@ impl Context {
         let clinet_len = self.clients.len();
         let mut results = Vec::new();
         let mut futures = Vec::new();
-        // use split_at_mut to split the data into chunks and split clients into chunks then zip them together and for each chunk create a future
         for (data_chunk, client_chunk) in data.chunks(data.len()/clinet_len).zip(self.clients.split_at_mut(clinet_len).0) {
             let serialized = bincode::serialize(&data_chunk).unwrap();
             let request_map = tonic::Request::new(MapRequest {
@@ -279,14 +266,11 @@ impl Context {
             });
             futures.push(client_chunk.reduce_chunk(request_map));
         }
-        // wait for all futures to finish and collect the results
         for future in futures {
             let response = future.await?;
             results.push(bincode::deserialize::<FROM>(&response.into_inner().data).unwrap());
         }
-        // reduce the results 
-        // effectively just run single worker reduce function on the results
-        
+
         let final_reduction_request = tonic::Request::new(MapRequest {
             function:  name.into(),
             data:  bincode::serialize(&results).unwrap().into(),

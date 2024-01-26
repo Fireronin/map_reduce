@@ -50,7 +50,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Workers pool={:?}", context.clients.len());
 
     // sample data with 10 elements
-    let data_vec: Vec<KeyValue> = (1..10).map(|x| KeyValue { key: x, value: x as i64 }).collect();
+    let data_vec: Vec<KeyValue> = (1..11).map(|x| KeyValue { key: x, value: x as i64 }).collect();
+
+    println!("Data length={:?}", data_vec.len());
 
     let result = map_distributed!(context, multiply_by_2, data_vec);
     println!("Map RESPONSE={:?}", result);

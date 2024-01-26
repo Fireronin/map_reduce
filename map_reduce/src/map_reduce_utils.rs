@@ -158,7 +158,7 @@ impl Context {
             chunks_to_process.push_back(i);
         }
 
-        let mut futures_ordered = FuturesOrdered::new();
+        let mut futures_ordered = FuturesUnordered::new();
         let mut chunks_currently_processing = VecDeque::new();
         
         while (!chunks_to_process.is_empty()) || (!chunks_currently_processing.is_empty()) {
@@ -167,8 +167,6 @@ impl Context {
                     let response : Response<MapReply> = response;
                     let output = bincode::deserialize::<Vec<TO>>(&response.into_inner().data).unwrap();
                     results.push(output);
-                    println!("Results: {:?}", results.len());
-                    //avaliable_workers.push_back(job_id);
                     chunks_currently_processing.pop_front();
                     self.clients.push(client);
                 },
@@ -193,7 +191,7 @@ impl Context {
                                 data:  serialized.into(),
                             });
                             let future = map_request_runner(chunk_index, one_client, request_map);
-                            futures_ordered.push_back(future);
+                            futures_ordered.push(future);
                             chunks_currently_processing.push_back(chunk_index);
                         },
                         None => {

@@ -49,6 +49,8 @@ echo $workers_ips
 
 $workers_ips | str join "," | save -f workers_urls 
 
+try {kubectl exec ($master_pod) -- pkill -f map_reduce}
+
 kubectl cp ./map_reduce/target/debug/map_reduce $"($master_pod):/home/map/map_reduce"
 kubectl cp ./workers_urls $"($master_pod):/home/map/workers_urls" -c master
 

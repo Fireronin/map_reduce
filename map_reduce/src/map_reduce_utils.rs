@@ -182,26 +182,24 @@ impl Context {
             };
 
             
-            if self.clients.is_empty(){
-                continue;
-            }
             match chunks_to_process.pop_front() {
-                
                 Some(chunk_index) => {
-                    let data_chunk = &chunks[chunk_index];
-                    let serialized = bincode::serialize(&data_chunk).unwrap();
-                    let request_map = tonic::Request::new(MapRequest {
-                        function:  name.into(),
-                        data:  serialized.into(),
-                    });
-                    //let worker_idx = avaliable_workers.pop_front().unwrap();
-
-                    let one_client = self.clients.drain(0..0).next().unwrap();
-
-                    let future = map_request_runner(chunk_index, one_client, request_map);
-                    
-                    futures_ordered.push_back(future);
-                    chunks_currently_processing.push_back(chunk_index);
+                    match self.clients.pop() {
+                        Some(one_client) => {
+                            let data_chunk = &chunks[chunk_index];
+                            let serialized = bincode::serialize(&data_chunk).unwrap();
+                            let request_map = tonic::Request::new(MapRequest {
+                                function:  name.into(),
+                                data:  serialized.into(),
+                            });
+                            let future = map_request_runner(chunk_index, one_client, request_map);
+                            futures_ordered.push_back(future);
+                            chunks_currently_processing.push_back(chunk_index);
+                        },
+                        None => {
+                            continue;
+                        }
+                    }
                 },
                 None => {
                     continue;

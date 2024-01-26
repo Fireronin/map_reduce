@@ -2,7 +2,7 @@ use futures::stream::{FuturesUnordered};
 use serde::{Serialize, Deserialize};
 use tokio::time::{timeout, Duration};
 use tonic::transport::Channel;
-use std::cmp::max;
+use std::{cmp::max, thread::sleep};
 use std::collections::HashMap;
 use map_reduce::*;
 use map_reduce::map_reduce_client::MapReduceClient;
@@ -90,6 +90,18 @@ async fn map_request_runner( job_id: usize, mut client: MapReduceClient<Channel>
     }
 }
 
+async fn reduce_request_runner( job_id: usize, mut client: MapReduceClient<Channel>, request: tonic::Request<MapRequest>) -> Result<(usize, Response<MapReply>, MapReduceClient<Channel>), (usize,Status)> {
+    let timeout_duration = Duration::from_secs(5); // Set your timeout duration
+
+    let response_future = client.reduce_chunk(request);
+
+    match timeout(timeout_duration, response_future).await {
+        Ok(Ok(response)) => Ok((job_id, response, client)),
+        Ok(Err(status)) => Err((job_id,status)),
+        Err(_) => Err((job_id,Status::deadline_exceeded("Timeout exceeded"))),
+    }
+}
+
 
 impl Context {
     pub fn new() -> Self {
@@ -132,7 +144,7 @@ impl Context {
     
 
 
-    async fn map_function_distributed<FROM: Any + Serialize + Sync, TO: for<'de> Deserialize<'de> + Send  >(&mut self, name: &str, data: &Vec<FROM>) -> Result<Vec<TO>, Box<dyn std::error::Error>> {
+    async fn map_function_distributed<FROM: Any + Serialize + Sync, TO: for<'de> Deserialize<'de> + Send>(&mut self, name: &str, data: &Vec<FROM>) -> Result<Vec<TO>, Box<dyn std::error::Error>> {
         let clinet_len = self.clients.len();
         let mut results: Vec<Vec<TO>> = Vec::new();
         //let chunks = chunking_strategy(data, clinet_len*2);
@@ -183,6 +195,7 @@ impl Context {
                             futures_unordered.push(future);
                         },
                         None => {
+                            sleep(Duration::from_millis(100));
                             continue;
                         }
                     }
@@ -191,7 +204,6 @@ impl Context {
                     continue;
                 }
             }
-
         }
 
         // version without failure handling
@@ -238,19 +250,65 @@ impl Context {
     pub async fn reduce_function_distributed<FROM: Any + Serialize + Sync + for<'de> Deserialize<'de> + Send >(&mut self, name: &str, data: &Vec<FROM>) -> Result<FROM, Box<dyn std::error::Error>> {
         let clinet_len = self.clients.len();
         let mut results = Vec::new();
-        let mut futures = Vec::new();
-        for (data_chunk, client_chunk) in data.chunks(data.len()/clinet_len).zip(self.clients.split_at_mut(clinet_len).0) {
-            let serialized = bincode::serialize(&data_chunk).unwrap();
-            let request_map = tonic::Request::new(MapRequest {
-                function:  name.into(),
-                data:  serialized.into(),
-            });
-            futures.push(client_chunk.reduce_chunk(request_map));
+
+        let chunks = data.chunks(data.len()/clinet_len).collect::<Vec<_>>();
+
+        for chunk in &chunks {
+            println!("Chunk size: {}", chunk.len());
         }
-        for future in futures {
-            let response = future.await?;
-            results.push(bincode::deserialize::<FROM>(&response.into_inner().data).unwrap());
+
+        let mut chunks_to_process = VecDeque::new();
+        
+        for i in 0..chunks.len() {
+            chunks_to_process.push_back(i);
         }
+
+        let mut futures_unordered = FuturesUnordered::new();
+        
+        while (!chunks_to_process.is_empty()) || (!futures_unordered.is_empty()) {
+            match futures_unordered.next().await {
+                Some(Ok((_,response , client))) => {
+                    let response : Response<MapReply> = response;
+                    let output = bincode::deserialize::<FROM>(&response.into_inner().data).unwrap();
+                    results.push(output);
+                    self.clients.push(client);
+                },
+                Some(Err((job_id,e))) => {
+                    println!("Error: {}",e);
+                    chunks_to_process.push_back(job_id);
+                    
+                },
+                None => {
+                    
+                },
+            };
+
+            
+            match chunks_to_process.pop_front() {
+                Some(chunk_index) => {
+                    match self.clients.pop() {
+                        Some(one_client) => {
+                            let data_chunk = &chunks[chunk_index];
+                            let serialized = bincode::serialize(&data_chunk).unwrap();
+                            let request_map = tonic::Request::new(MapRequest {
+                                function:  name.into(),
+                                data:  serialized.into(),
+                            });
+                            let future = reduce_request_runner(chunk_index, one_client, request_map);
+                            futures_unordered.push(future);
+                        },
+                        None => {
+                            sleep(Duration::from_millis(100));
+                            continue;
+                        }
+                    }
+                },
+                None => {
+                    continue;
+                }
+            }
+        }
+
 
         let final_reduction_request = tonic::Request::new(MapRequest {
             function:  name.into(),

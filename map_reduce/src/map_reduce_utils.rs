@@ -182,9 +182,9 @@ impl Context {
             };
 
             
-            // if avaliable_workers.is_empty(){
-            //     continue;
-            // }
+            if self.clients.is_empty(){
+                continue;
+            }
             match chunks_to_process.pop_front() {
                 
                 Some(chunk_index) => {

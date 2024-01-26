@@ -83,15 +83,15 @@ fn chunking_strategy<T : Copy>(data: &Vec<T>, number_of_chunks: usize) -> Vec<Ve
     chunks
 }
 
-async fn map_request_runner( job_id: usize, mut client: MapReduceClient<Channel>, request: tonic::Request<MapRequest>) -> Result<(usize, Response<MapReply>, MapReduceClient<Channel>), Status> {
+async fn map_request_runner( job_id: usize, mut client: MapReduceClient<Channel>, request: tonic::Request<MapRequest>) -> Result<(usize, Response<MapReply>, MapReduceClient<Channel>), (usize,Status)> {
     let timeout_duration = Duration::from_secs(5); // Set your timeout duration
 
     let response_future = client.map_chunk(request);
 
     match timeout(timeout_duration, response_future).await {
         Ok(Ok(response)) => Ok((job_id, response, client)),
-        Ok(Err(status)) => Err(status),
-        Err(_) => Err(Status::deadline_exceeded("Timeout exceeded")),
+        Ok(Err(status)) => Err((job_id,status)),
+        Err(_) => Err((job_id,Status::deadline_exceeded("Timeout exceeded"))),
     }
 }
 
@@ -149,30 +149,24 @@ impl Context {
 
         let mut chunks_to_process = VecDeque::new();
         
-        // let mut avaliable_workers = VecDeque::new();
-        // for i in 0..self.clients.len() {
-        //     avaliable_workers.push_back(i);
-        // } 
-
         for i in 0..chunks.len() {
             chunks_to_process.push_back(i);
         }
 
-        let mut futures_ordered = FuturesUnordered::new();
-        let mut chunks_currently_processing = VecDeque::new();
+        let mut futures_unordered = FuturesUnordered::new();
         
-        while (!chunks_to_process.is_empty()) || (!chunks_currently_processing.is_empty()) {
-            match futures_ordered.next().await {
-                Some(Ok((job_id,response , client))) => {
+        while (!chunks_to_process.is_empty()) || (!futures_unordered.is_empty()) {
+            match futures_unordered.next().await {
+                Some(Ok((_,response , client))) => {
                     let response : Response<MapReply> = response;
                     let output = bincode::deserialize::<Vec<TO>>(&response.into_inner().data).unwrap();
                     results.push(output);
-                    chunks_currently_processing.pop_front();
                     self.clients.push(client);
                 },
-                Some(Err(e)) => {
+                Some(Err((job_id,e))) => {
                     println!("Error: {}",e);
-                    chunks_to_process.push_back(chunks_currently_processing.pop_front().unwrap());
+                    chunks_to_process.push_back(job_id);
+                    
                 },
                 None => {
                     
@@ -191,8 +185,7 @@ impl Context {
                                 data:  serialized.into(),
                             });
                             let future = map_request_runner(chunk_index, one_client, request_map);
-                            futures_ordered.push(future);
-                            chunks_currently_processing.push_back(chunk_index);
+                            futures_unordered.push(future);
                         },
                         None => {
                             continue;
@@ -205,9 +198,6 @@ impl Context {
             }
 
         }
-
-        
-
 
         // version without failure handling
         // for (data_chunk, client_chunk) in data.chunks(data.len()/clinet_len).zip(self.clients.split_at_mut(clinet_len).0) {

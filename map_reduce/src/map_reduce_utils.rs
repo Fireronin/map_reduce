@@ -1,7 +1,6 @@
-use futures::stream::{futures_unordered, FuturesOrdered, FuturesUnordered};
+use futures::stream::{FuturesUnordered};
 use serde::{Serialize, Deserialize};
-use tokio::time::error::Elapsed;
-use tokio::time::{timeout, Duration, Timeout};
+use tokio::time::{timeout, Duration};
 use tonic::transport::Channel;
 use std::cmp::max;
 use std::collections::HashMap;
@@ -12,11 +11,7 @@ use rayon::prelude::*;
 use std::sync::Arc;
 use std::env;
 use futures::*;
-use std::future::*;
-use std::pin::Pin;
-use std::task;
-use std::task::Poll;
-use tonic::{client, Response, Status};
+use tonic::{ Response, Status};
 use std::collections::VecDeque;
 use crate::worker_service;
 pub mod map_reduce {
@@ -69,7 +64,7 @@ pub struct Context {
     pub clients: Vec<MapReduceClient<Channel>>,
 }
 
-
+#[allow(dead_code)]
 fn chunking_strategy<T : Copy>(data: &Vec<T>, number_of_chunks: usize) -> Vec<Vec<T>> {
     let mut chunks = Vec::new();
     let chunk_size = max(data.len() / number_of_chunks,1);
@@ -137,7 +132,7 @@ impl Context {
     
 
 
-    async fn map_function_distributed<FROM: Any + Serialize + Sync +Copy, TO: for<'de> Deserialize<'de> + Send + Clone >(&mut self, name: &str, data: &Vec<FROM>) -> Result<Vec<TO>, Box<dyn std::error::Error>> {
+    async fn map_function_distributed<FROM: Any + Serialize + Sync, TO: for<'de> Deserialize<'de> + Send  >(&mut self, name: &str, data: &Vec<FROM>) -> Result<Vec<TO>, Box<dyn std::error::Error>> {
         let clinet_len = self.clients.len();
         let mut results: Vec<Vec<TO>> = Vec::new();
         //let chunks = chunking_strategy(data, clinet_len*2);
@@ -224,7 +219,7 @@ impl Context {
     }
     
     // this function exists only because we want to make sure function is the right type and you should always use macro
-    pub async fn call_map_function_distributed<FROM: Any + Serialize + Send + Sync+Copy, TO: for<'de> Deserialize<'de>  + Send + Sync + Clone , F: Fn(&FROM) -> TO + 'static>(
+    pub async fn call_map_function_distributed<FROM: Any + Serialize + Send + Sync, TO: for<'de> Deserialize<'de>  + Send + Sync , F: Fn(&FROM) -> TO + 'static>(
         &mut self,
         _: F, 
         func_name: &str, 
@@ -277,7 +272,7 @@ impl Context {
     }
     
     // this function exists only because we want to make sure function is the right type and you should always use macro
-    pub async fn call_reduce_function_distributed<FROM: Any + Serialize + Send + Sync + for<'de> Deserialize<'de>+ Copy, F: Fn(&FROM,&FROM) -> FROM + 'static>(
+    pub async fn call_reduce_function_distributed<FROM: Any + Serialize + Send + Sync + for<'de> Deserialize<'de>, F: Fn(&FROM,&FROM) -> FROM + 'static>(
         &mut self,
         _: F, 
         func_name: &str, 
@@ -301,8 +296,8 @@ impl Context {
     }
 
     pub async fn map_reduce_function_distributed<
-        FROM: Any + Serialize + for<'de> Deserialize<'de> + Sync + Send + Clone,
-        TO: Any + Serialize + for<'da> Deserialize<'da> + Sync + Send + Clone >
+        FROM: Any + Serialize + for<'de> Deserialize<'de> + Sync + Send ,
+        TO: Any + Serialize + for<'da> Deserialize<'da> + Sync + Send  >
         (&mut self, mapping_function_name: &str, reducing_function_name: &str, data: &Vec<FROM>) -> Result<TO, Box<dyn std::error::Error>> {
         
 
@@ -348,8 +343,8 @@ impl Context {
     }
 
     pub async fn call_map_reduce_functions_distributed<
-        FROM: Any +  for<'de> Deserialize<'de> + Serialize + Send + Sync + Clone + Copy,
-        TO: Any + for<'da> Deserialize<'da> + Serialize + Send + Sync + Clone + Copy,
+        FROM: Any +  for<'de> Deserialize<'de> + Serialize + Send + Sync ,
+        TO: Any + for<'da> Deserialize<'da> + Serialize + Send + Sync,
         FMap: Fn(&FROM) -> TO + 'static ,
         FReduce: Fn(&TO,&TO) -> TO + 'static > (
         &mut self,

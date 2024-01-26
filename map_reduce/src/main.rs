@@ -8,9 +8,9 @@ pub mod worker_service;
 
 
 // Example data structure
-#[derive(Serialize, Deserialize, Debug, Clone,Default,Copy)]
+#[derive(Serialize, Deserialize,Debug,Clone)]
 pub struct KeyValue {
-    pub key: i32,
+ //   pub key: i32,
     pub value: i64,
 }
 
@@ -18,14 +18,14 @@ pub struct KeyValue {
 
 pub fn multiply_by_2(x: &KeyValue) -> KeyValue {
     KeyValue {
-        key: x.key,
+     //   key: x.key,
         value: x.value * 2,
     }
 }
 
 pub fn sum(x: &KeyValue, y: &KeyValue) -> KeyValue {
     KeyValue {
-        key: x.key,
+      //  key: x.key,
         value: x.value + y.value,
     }
 }
@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Workers pool={:?}", context.clients.len());
 
     // sample data with 10 elements
-    let data_vec: Vec<KeyValue> = (1..11).map(|x| KeyValue { key: x, value: x as i64 }).collect();
+    let data_vec: Vec<KeyValue> = (1..11).map(|x| KeyValue {  value: x as i64 }).collect();
 
     println!("Data length={:?}", data_vec.len());
 
